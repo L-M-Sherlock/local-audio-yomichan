@@ -20,7 +20,7 @@ from .util import (
     get_version_file,
     QueryComponents,
 )
-from .jp_util import is_hiragana
+from .jp_util import is_hiragana, katakana_to_hiragana
 #from .all_sources import ID_TO_SOURCE_MAP, SOURCES
 from .config import ALL_SOURCES
 from .consts import *
@@ -331,6 +331,124 @@ def fill_jmdict_forms(conn: sqlite3.Connection):
     conn.commit()
 
 
+def _is_kana_only(text: str) -> bool:
+    if not text:
+        return False
+    for char in text:
+        if char == "ー":
+            continue
+        if char < "ぁ" or char > "ヾ":
+            return False
+    return True
+
+
+def _has_ascii(text: str) -> bool:
+    return any("!" <= ch <= "~" for ch in text)
+
+
+_FULLWIDTH_MAP = {i: i + 0xFEE0 for i in range(0x21, 0x7F)}
+
+
+def _to_fullwidth(text: str) -> str:
+    return text.translate(_FULLWIDTH_MAP)
+
+
+def expand_normalize_entries(conn: sqlite3.Connection, callback: Optional[Callable[[str], None]] = None) -> int:
+    """
+    Add expanded/normalized entries derived from existing data.
+    This does not rely on any external prebuilt database.
+    """
+    if callback is not None:
+        callback("Expanding entries (kana/ascii normalization)...")
+
+    read_cur = conn.cursor()
+    write_cur = conn.cursor()
+
+    write_cur.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS variants (
+            expression text NOT NULL,
+            reading text,
+            source text NOT NULL,
+            speaker text,
+            display text,
+            file text NOT NULL
+        )
+        """
+    )
+    write_cur.execute("DELETE FROM variants")
+
+    select_sql = "SELECT expression, reading, source, speaker, display, file FROM entries"
+    batch: list[tuple] = []
+
+    def flush():
+        if batch:
+            write_cur.executemany(
+                "INSERT INTO variants (expression, reading, source, speaker, display, file) VALUES (?,?,?,?,?,?)",
+                batch,
+            )
+            batch.clear()
+
+    for expression, reading, source, speaker, display, file in read_cur.execute(select_sql):
+        reading_norm = katakana_to_hiragana(reading) if reading else None
+
+        # reading normalization variant
+        if reading_norm is not None and reading_norm != reading:
+            batch.append((expression, reading_norm, source, speaker, display, file))
+
+        # expression normalization variants (kana-only + ascii fullwidth)
+        expr_variants: list[str] = []
+        if expression:
+            if _is_kana_only(expression):
+                expr_hira = katakana_to_hiragana(expression)
+                if expr_hira != expression:
+                    expr_variants.append(expr_hira)
+            if _has_ascii(expression):
+                expr_fw = _to_fullwidth(expression)
+                if expr_fw != expression:
+                    expr_variants.append(expr_fw)
+
+        if expr_variants:
+            new_reading = reading_norm if reading_norm is not None else reading
+            for expr_variant in expr_variants:
+                if expr_variant == expression and new_reading == reading:
+                    continue
+                batch.append((expr_variant, new_reading, source, speaker, display, file))
+
+        if len(batch) >= 2000:
+            flush()
+
+    flush()
+
+    before = write_cur.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+    write_cur.execute(
+        """
+        INSERT INTO entries (expression, reading, source, speaker, display, file)
+        SELECT DISTINCT v.expression, v.reading, v.source, v.speaker, v.display, v.file
+        FROM variants v
+        WHERE NOT EXISTS (
+            SELECT 1 FROM entries e
+            WHERE e.expression = v.expression
+              AND IFNULL(e.reading, '') = IFNULL(v.reading, '')
+              AND e.source = v.source
+              AND IFNULL(e.speaker, '') = IFNULL(v.speaker, '')
+              AND IFNULL(e.display, '') = IFNULL(v.display, '')
+              AND e.file = v.file
+        )
+        """
+    )
+    after = write_cur.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+
+    write_cur.execute("DELETE FROM variants")
+    write_cur.close()
+    read_cur.close()
+    conn.commit()
+
+    added = after - before
+    print(f"(init_db) Expanded entries added: {added}")
+    return added
+
+
 def init_db(callback: Optional[Callable[[str], None]] = None):
     """
     callback is an optional function to inform the UI of the current action
@@ -421,6 +539,8 @@ def init_db(callback: Optional[Callable[[str], None]] = None):
             if callback is not None:
                 callback(f"Adding entries from {source.data.id}...")
             source.add_entries(connection)
+
+        expand_normalize_entries(connection, callback)
 
     if callback is not None:
         callback("Backfilling entries using JMdict data...")
