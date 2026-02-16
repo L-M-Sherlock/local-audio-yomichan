@@ -493,7 +493,9 @@ def import_entry_and_pitch_sql(conn: sqlite3.Connection, callback: Optional[Call
     cur.execute(
         f"""
         INSERT INTO entries (expression, reading, source, speaker, display, file)
-        SELECT e.expression, e.reading, e.source, e.speaker, e.display, e.file
+        SELECT e.expression,
+               CASE WHEN e.reading = '' THEN NULL ELSE e.reading END,
+               e.source, e.speaker, e.display, e.file
         FROM expanded_entries e
         WHERE e.source IN ({placeholders})
           AND NOT EXISTS (
@@ -602,19 +604,21 @@ def init_db(callback: Optional[Callable[[str], None]] = None):
         cursor.execute(create_idx_expr_reading_speaker_sql)
         cursor.close()
 
-        for source in ALL_SOURCES.values():
-            print(f"(init_db) Adding entries from {source.data.id}...")
-            if callback is not None:
-                callback(f"Adding entries from {source.data.id}...")
-            source.add_entries(connection)
-
-        added_sql = import_entry_and_pitch_sql(connection, callback)
-        if added_sql == 0:
+        sql_path = get_data_dir().joinpath(ENTRY_AND_PITCH_SQL_FILE_NAME)
+        if sql_path.is_file():
+            import_entry_and_pitch_sql(connection, callback)
+        else:
+            for source in ALL_SOURCES.values():
+                print(f"(init_db) Adding entries from {source.data.id}...")
+                if callback is not None:
+                    callback(f"Adding entries from {source.data.id}...")
+                source.add_entries(connection)
             expand_normalize_entries(connection, callback)
 
-    if callback is not None:
-        callback("Backfilling entries using JMdict data...")
-    fill_jmdict_forms(connection)
+    if not sql_path.is_file():
+        if callback is not None:
+            callback("Backfilling entries using JMdict data...")
+        fill_jmdict_forms(connection)
 
     print("Finished initializing database!")
 
