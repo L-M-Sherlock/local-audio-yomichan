@@ -59,8 +59,16 @@ class AJTJapaneseSource(AudioSource):
     def _get_media_dir_name(self, index: AJTIndex) -> str:
         media_dir = index.get("meta", {}).get("media_dir", None)
         if isinstance(media_dir, str) and media_dir.strip():
-            return media_dir.strip()
-        return "media"
+            candidate = media_dir.strip()
+        else:
+            candidate = "media"
+        base_dir = self.get_media_dir_path()
+        if base_dir.joinpath(candidate).is_dir():
+            return candidate
+        for fallback in ("media", "audio"):
+            if base_dir.joinpath(fallback).is_dir():
+                return fallback
+        return candidate
 
     def _resolve_media_file_relpath(self, media_dir: str, word_file: str) -> Optional[str]:
         base_dir = self.get_media_dir_path().joinpath(media_dir)
