@@ -88,18 +88,18 @@ def android_write(og_cur, cur):
     """
 
     create_index_sql = f"""
-        CREATE INDEX idx_android ON android(file, source);
+        CREATE UNIQUE INDEX idx_android ON android(file, source);
     """
     cur.execute(drop_table_sql)
     cur.execute(create_table_sql)
     cur.execute(create_index_sql)
 
     sql = f"""
-        INSERT INTO android (file, source, data) VALUES (?,?,?)
+        INSERT OR IGNORE INTO android (file, source, data) VALUES (?,?,?)
         """
 
     all_files_query = f"""
-        SELECT file, source FROM entries
+        SELECT DISTINCT file, source FROM entries
         """
 
     rows = og_cur.execute(all_files_query).fetchall()
@@ -509,8 +509,7 @@ def execute_query(cursor: sqlite3.Connection, qcomps: QueryComponents) -> list[A
     else:
         params = [qcomps.expression, qcomps.reading]
         query_where = f"""
-            expression = ?
-            AND (reading IS NULL OR reading = ?)
+            (expression = ? OR reading = ?)
         """
 
     # filters by sources if necessary
@@ -529,8 +528,21 @@ def execute_query(cursor: sqlite3.Connection, qcomps: QueryComponents) -> list[A
         """
         params += qcomps.user
 
+    query_order_parts = []
+
+    # orders by match type if reading was provided
+    if qcomps.reading is not None:
+        query_order_parts.append(
+            "(CASE "
+            "WHEN expression = ? AND reading = ? THEN 0 "
+            "WHEN expression = ? THEN 1 "
+            "WHEN reading = ? THEN 2 "
+            "ELSE 3 END)"
+        )
+        params += [qcomps.expression, qcomps.reading, qcomps.expression, qcomps.reading]
+
     # orders by source
-    query_order = (
+    query_order_parts.append(
         "(CASE source "
         + "\n".join(f"WHEN ? THEN {i}" for i in range(len(qcomps.sources)))
         + " END)"
@@ -539,12 +551,14 @@ def execute_query(cursor: sqlite3.Connection, qcomps: QueryComponents) -> list[A
 
     # orders by speakers if necessary
     if len(qcomps.user) > 0:
-        query_order += (
-            ",\n(CASE speaker "
+        query_order_parts.append(
+            "(CASE speaker "
             + "\n".join(f"WHEN ? THEN {i}" for i in range(len(qcomps.user)))
             + " END)"
         )
         params += qcomps.user
+
+    query_order = ",\n  ".join(query_order_parts)
 
     query = f"""
         SELECT * FROM entries WHERE (
