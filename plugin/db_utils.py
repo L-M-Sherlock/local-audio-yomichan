@@ -449,6 +449,74 @@ def expand_normalize_entries(conn: sqlite3.Connection, callback: Optional[Callab
     return added
 
 
+def import_entry_and_pitch_sql(conn: sqlite3.Connection, callback: Optional[Callable[[str], None]] = None) -> int:
+    """
+    Import expanded entries from entry_and_pitch_db.sql if present.
+    This provides a full expansion that matches Yomitan Ultimate Audio.
+    """
+    sql_path = get_data_dir().joinpath(ENTRY_AND_PITCH_SQL_FILE_NAME)
+    if not sql_path.is_file():
+        return 0
+
+    if callback is not None:
+        callback("Importing entry_and_pitch_db.sql...")
+
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS expanded_entries")
+    cur.execute(
+        """
+        CREATE TEMP TABLE expanded_entries (
+            id integer NOT NULL,
+            expression text NOT NULL,
+            reading text,
+            source text NOT NULL,
+            speaker text,
+            display text,
+            file text NOT NULL
+        )
+        """
+    )
+
+    conn.commit()
+    cur.execute("BEGIN")
+    with open(sql_path, encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("INSERT INTO entries VALUES"):
+                continue
+            line = line.replace("INSERT INTO entries", "INSERT INTO expanded_entries", 1)
+            cur.execute(line)
+    cur.execute("COMMIT")
+
+    before = cur.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+    sources = list(ALL_SOURCES.keys())
+    placeholders = ",".join(["?"] * len(sources))
+    cur.execute(
+        f"""
+        INSERT INTO entries (expression, reading, source, speaker, display, file)
+        SELECT e.expression, e.reading, e.source, e.speaker, e.display, e.file
+        FROM expanded_entries e
+        WHERE e.source IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1 FROM entries cur
+              WHERE cur.expression = e.expression
+                AND IFNULL(cur.reading, '') = IFNULL(e.reading, '')
+                AND cur.source = e.source
+                AND cur.file = e.file
+          )
+        """,
+        sources,
+    )
+    after = cur.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+
+    cur.execute("DROP TABLE IF EXISTS expanded_entries")
+    cur.close()
+    conn.commit()
+
+    added = after - before
+    print(f"(init_db) SQL expanded entries added: {added}")
+    return added
+
+
 def init_db(callback: Optional[Callable[[str], None]] = None):
     """
     callback is an optional function to inform the UI of the current action
@@ -540,7 +608,9 @@ def init_db(callback: Optional[Callable[[str], None]] = None):
                 callback(f"Adding entries from {source.data.id}...")
             source.add_entries(connection)
 
-        expand_normalize_entries(connection, callback)
+        added_sql = import_entry_and_pitch_sql(connection, callback)
+        if added_sql == 0:
+            expand_normalize_entries(connection, callback)
 
     if callback is not None:
         callback("Backfilling entries using JMdict data...")
