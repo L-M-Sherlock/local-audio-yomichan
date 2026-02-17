@@ -20,7 +20,7 @@ from .util import (
     get_version_file,
     QueryComponents,
 )
-from .jp_util import is_hiragana, katakana_to_hiragana
+from .jp_util import is_hiragana, is_kana, katakana_to_hiragana
 #from .all_sources import ID_TO_SOURCE_MAP, SOURCES
 from .config import ALL_SOURCES
 from .consts import *
@@ -331,17 +331,6 @@ def fill_jmdict_forms(conn: sqlite3.Connection):
     conn.commit()
 
 
-def _is_kana_only(text: str) -> bool:
-    if not text:
-        return False
-    for char in text:
-        if char == "ー":
-            continue
-        if char < "ぁ" or char > "ヾ":
-            return False
-    return True
-
-
 def _has_ascii(text: str) -> bool:
     return any("!" <= ch <= "~" for ch in text)
 
@@ -399,7 +388,7 @@ def expand_normalize_entries(conn: sqlite3.Connection, callback: Optional[Callab
         # expression normalization variants (kana-only + ascii fullwidth)
         expr_variants: list[str] = []
         if expression:
-            if _is_kana_only(expression):
+            if expression and is_kana(expression):
                 expr_hira = katakana_to_hiragana(expression)
                 if expr_hira != expression:
                     expr_variants.append(expr_hira)
