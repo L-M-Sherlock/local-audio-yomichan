@@ -489,12 +489,21 @@ def init_db(callback: Optional[Callable[[str], None]] = None):
         sql_path = get_data_dir().joinpath(ENTRY_AND_PITCH_SQL_FILE_NAME)
         if sql_path.is_file():
             import_entry_and_pitch_sql(connection, callback)
+            existing_sources = {
+                row[0]
+                for row in connection.execute("SELECT DISTINCT source FROM entries").fetchall()
+                if row and row[0]
+            }
         else:
-            for source in ALL_SOURCES.values():
-                print(f"(init_db) Adding entries from {source.data.id}...")
-                if callback is not None:
-                    callback(f"Adding entries from {source.data.id}...")
-                source.add_entries(connection)
+            existing_sources = set()
+
+        for source in ALL_SOURCES.values():
+            if source.data.id in existing_sources:
+                continue
+            print(f"(init_db) Adding entries from {source.data.id}...")
+            if callback is not None:
+                callback(f"Adding entries from {source.data.id}...")
+            source.add_entries(connection)
 
     if not sql_path.is_file():
         if callback is not None:
