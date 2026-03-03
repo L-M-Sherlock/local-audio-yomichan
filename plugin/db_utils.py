@@ -98,8 +98,9 @@ def android_write(og_cur, cur):
         INSERT INTO android (file, source, data) VALUES (?,?,?)
         """
 
+    # De-dup rows by file+source to avoid inserting the same audio multiple times.
     all_files_query = f"""
-        SELECT file, source FROM entries
+        SELECT DISTINCT file, source FROM entries
         """
 
     rows = og_cur.execute(all_files_query).fetchall()
